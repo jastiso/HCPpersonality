@@ -1,0 +1,149 @@
+---
+title: "importance_rf"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+Look at importance of rf models
+
+```{r}
+library(MASS)
+load('fit_rf_full.RData')
+load('fit_rf_partial.RData')
+```
+
+
+Loop through each model, and get the top elbow of important variables
+```{r}
+                        
+#full
+importance_full = data.frame()
+cnt = 0;
+for (curr in fits.rf.full){
+  cnt = cnt+1
+imp = curr$importance
+max_idx = which(curr$importance==max(curr$importance))
+#plot(sort(curr$importance), main = 'Sorted Importance of Varibles')
+imp = sort(curr$importance, decreasing = TRUE)
+
+# line connecting endpoints of fitted curve
+x = 1:length(imp)
+i1 <- which.min(x)
+i2 <- which.max(x)
+slope <- (imp[i2] - imp[i1]) / (x[i2] - x[i1])
+int <- imp[i1] - slope*x[i1]
+
+# for every point on the predicted curve (xi, pi), the perpendicular line that goes through that point has
+perpslope <- -1/slope
+perpint <- imp - perpslope*x
+
+# the intersection of the perp line(s) with the connecting line is
+xcross <- (int - perpint) / (perpslope - slope)
+ycross <- slope*xcross + int
+
+# the distance between the intersection and the point(s) is
+dists <- sqrt((x - xcross)^2 + (imp - ycross)^2)
+
+# the index of the farthest point
+elbowi <- which.max(dists)
+
+important_indices = 1:elbowi
+
+trans_idx= numeric(elbowi)
+for (i in 1:elbowi){
+  trans_idx[i] = which(curr$importance == imp[important_indices[i]])
+}
+n = rownames(curr$importance)[trans_idx]
+n
+importance_full[1:elbowi,cnt] = n
+# plot the data
+plot(x, imp)
+lines(x[c(i1, i2)], imp[c(i1, i2)])
+points(x[elbowi], imp[elbowi], pch=16, col="red")
+lines(x[order(x)], imp[order(x)], col="blue")
+lines(c(x[elbowi], xcross[elbowi]), c(imp[elbowi], ycross[elbowi]), col="red")
+
+}
+names(importance_full) = c('NEOFAC_A','NEOFAC_C', 'NEOFAC_O', 'NEOFAC_N', 'NEOFAC_E')
+save(importance_full, file='importance_full.RData')
+```
+
+Do the same for partial
+```{r}
+#partial
+
+importance_partial = data.frame()
+cnt = 0;
+for (curr in fits.rf.full){
+  cnt = cnt+1
+imp = curr$importance
+max_idx = which(curr$importance==max(curr$importance))
+#plot(sort(curr$importance), main = 'Sorted Importance of Varibles')
+imp = sort(curr$importance, decreasing = TRUE)
+
+# line connecting endpoints of fitted curve
+x = 1:length(imp)
+i1 <- which.min(x)
+i2 <- which.max(x)
+slope <- (imp[i2] - imp[i1]) / (x[i2] - x[i1])
+int <- imp[i1] - slope*x[i1]
+
+# for every point on the predicted curve (xi, pi), the perpendicular line that goes through that point has
+perpslope <- -1/slope
+perpint <- imp - perpslope*x
+
+# the intersection of the perp line(s) with the connecting line is
+xcross <- (int - perpint) / (perpslope - slope)
+ycross <- slope*xcross + int
+
+# the distance between the intersection and the point(s) is
+dists <- sqrt((x - xcross)^2 + (imp - ycross)^2)
+
+# the index of the farthest point
+elbowi <- which.max(dists)
+
+important_indices = 1:elbowi
+
+trans_idx= numeric(elbowi)
+for (i in 1:elbowi){
+  trans_idx[i] = which(curr$importance == imp[important_indices[i]])
+}
+n = rownames(curr$importance)[trans_idx]
+n
+importance_partial[1:elbowi,cnt] = n
+# plot the data
+# plot the data
+plot(x, imp)
+lines(x[c(i1, i2)], imp[c(i1, i2)])
+points(x[elbowi], imp[elbowi], pch=16, col="red")
+lines(x[order(x)], imp[order(x)], col="blue")
+lines(c(x[elbowi], xcross[elbowi]), c(imp[elbowi], ycross[elbowi]), col="red")
+}
+names(importance_partial) = c('NEOFAC_A','NEOFAC_C', 'NEOFAC_O', 'NEOFAC_N', 'NEOFAC_E')
+save(importance_partial, file='importance_partial.RData')
+```
+
+Look at the varialbes
+```{r}
+(importance_full[1:20,])
+```
+
+```{r}
+(importance_partial[1:20,])
+```
+
+Text analysis: make a word cloud. This wasn't super useful
+```{r, fig.height=11, fig.width=11}
+tmp = sort(fits.rf.full$NEOFAC_A$importance)
+sizes = tmp[1:length(importance_full$NEOFAC_A)]
+names(sizes) = na.omit(importance_full$NEOFAC_A)
+name_imp = names(sizes) 
+wordcloud(name_imp, sizes,  # make a word cloud
+          colors=brewer.pal(9, "Dark2"), ordered.colors=F)
+```

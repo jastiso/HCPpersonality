@@ -1,0 +1,821 @@
+---
+title: "Using Network Measures of Functional Brain Activity to Predict Personality"
+author: "Jared P. Zimmerman, Jennifer Stiso, Katerina Placek"
+date: "11/14/2017"
+output:
+  html_document:
+    code_folding: show
+    highlight: haddock
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=F, results="hide"}
+#setup code
+knitr::opts_knit$set(root.dir = '/Users/jenis/Documents/R/Final/')
+
+#load packages with the pacman package
+if(!require('pacman')) {
+  install.packages('pacman')
+}
+pacman::p_load(dplyr, ggplot2, GGally, reshape2, corrplot, glmnet, leaps, randomForest, ranger, gbm, lavaan, tree)
+```
+
+# Executive Overview
+
+  Here, we take advantage of a large, publicly-available dataset funded by the National Institutes of Health (NIH) to investigate a novel research question: whether functional brain connectivity can predict personality characteristics.
+  Prior studies of human personality using functional magnetic resonance imaging (fMRI) data typically collapse data from many subjects to draw conclusions about the anatomical correlates of personality characteristics (e.g. Canil et al., 2001), but more recent study suggests that brain functional organization varies widely between individuals and can serve as a 'fingerprint' for identification of the individual within a larger group. Indeed, functional connectivity profiles of fMRI data defined per individual using network measures have been demonstrated to reliably discriminate individuals and relate to fluid intelligence and cognitive behavior (Finn et al., 2015). This suggests that intrinsic variation in functional connectivity profiles may reflect individual differences.
+  Further recent work suggests that functional brain connectivity profiles may extend beyond description or discrimination of the individual to more advanced usage in prediction. Data-driven predictive modeling has been posed as a novel, generalizable method to generate predictions of behavioral measures from functional brain connectivity data in novel individuals. Cross-validation indicates robustness of observed brain-behavior relationship using this method (Shen et al., 2017). 
+  With this prior research in mind, we use similar data-driven methods in this study to develop predictive models of personality characteristics from network measures of functional brain connectivity data. 
+We employ three models:
+  1) Random Forest
+  2) Boosting
+ With this prior research in mind, we use similar data-driven methods in this study to develop predictive models of personality characteristics from network measures of functional brain connectivity data. We use random forest and boosting models, and compare these models in terms of predictive accuracy for self-reported personality characteristics using cross-validation.
+  
+# Data Description
+```{r}
+#loading in data
+dataFiles <- c('allData_ic149_fullCor_n810_noG.csv', 'allData_ic149_pCor_n810_noG.csv')
+corNames <- c('full', 'partial')
+data <- lapply(dataFiles, read.csv, stringsAsFactors = TRUE)
+names(data) <- corNames
+```
+
+```{r, echo = FALSE}
+lapply(data, dim)
+```
+
+Our data has 810 observations, each a human subject from the HCP with neuroimaging data and behavioral data.  The dataset has 11821 variables.  These include demographics such as age and gender, the NEO Five Factor personality scores, structural brain brain data including cortical thickness and regional brain volumes, and brain functional connectivity data including the pairwise connections between 149 brain regions in a functional brain network.  These brain connectivity data account for most of the 11821 variables with `(149^2)/2 - 149/2` = `r (149^2)/2 - 149/2` unique connetions in a 149 node brain network.  Further information about these data follows.
+
+## Human Connectome Project
+
+  The Human Connectome Project (HCP) is a multi-center consortium funded by the NIH with the goal of mapping the macroscale structural and functional connectivity of the human brain (Van Essen et al. 2013).  In total, the project collected neuroimaging data including structural magnetic resonance imaging (MRI), resting-state functional MRI, task-based functional MRI, and diffusion spectrum imaging, as well as subject measures including behavioral and cognitive assays, demographic data, and health data on over 1200 healthy young adults.  These data have all been publically released in raw, processed, and highly-processed formats as resources for the research community.
+  For this project, we utilize some of the highly-processed data from the Parcellations, Timeseries, and Netmats (PTN) release.  Specifically, we use the netmats, or network matrices, data.  For the PTN release, the HCP consortium used group independent component analysis (ICA) on processed rs-fMRI data to create a data-driven parcellation of the  brain by identifying independent sources of variation within and across subjects. Following group ICA, a dual regression approach is used to fit the group-average parcellation template to each individual subject (Smith et al. 2013, Smith et al. 2014).  This dual-regression step results in subject-specific maps and a corresponding timeseries for each ICA component.  After dual-regression ICA, functional network connectivity matrices were constructed for each subject as $N*N$ matrices where $N$ is the number of ICA components and each matrix element $E_{ij}$ represents the functional connectivity between nodes $i$ and $j$.  The 'functional connectivity' between two network nodes (i.e. ICA components) is operationalized as some measure of the similarity in the timeseries of the two brain regions.  A variety of measures have been proposed as measures of functional connectivity, however by far the most common measure is a simple Pearson's correlation of the timeseries.  There is some debate, however, about whether Pearson's correlation is a good measure that actually represents "true" connections between brain areas, and it has been proposed that a more accurate measure of direct connections might be to use the partial correlation between regions (Smith et al. 2011).  With partial correlation, the time-series of all other network nodes is regressed out of nodes $i$ and $j$ before estimating their correlation to give a more accurate measure of the information uniquely shared between the two regions.  Because there is no obvious ground truth for functional brain networks, it is difficult to determine which measure gives a more accurate representation of the connectivity structure of the brain.  Prediction offers one possible solution to this problem.  Under the hypothesis that perception, affect, cognition, and behavior result from brain activity, the brain network method that is best able to predict these might be the most accurate representation of the connectivity structure of the brain.  For this reason, we have chosen to compare the predictive power of brain network constructed with both full and partial correlations. 
+  
+  Additionally from the HCP we have structural brain data.  These measures were derived by running the FreeSurfer structural analysis pipeline on the T1 structural MRI scans of HCP subjects. FreeSurfer performs automated brain segmentation and cortical surface parellation producing accurate and reproducible measurements of brain structure (Fischl, 2012).  
+
+## The NEO Five Factor Inventory
+
+  The NEO Five Factor Inventory (NEO-FFI) is a short, 60-item personality inventory designed to measure a person's 'Big Five' personality traits: openness to experience, conscientiousness, extraversion, agreeableness, and neuroticism (Costa & McCrae, 1992).  The 'Big Five' personality traits derive from the eponymous Five Factor Model, which suggests that a person's personality can be described along the aforementioned five dimensions. The name 'NEO' is a historic reflection of the test's original goal of measuring personality characteristics of neuroticism, extraversion, and openness to experience, with agreeabless and conscientiousness more recent additions not reflected in the test name. The NEO-FFI is completed in a self-report format, and contains 12 items designed to assess each of the five factors.
+  Each item consists of a statement about the participant, for example "I don’t get much pleasure chatting with people." Participants are required to rate their agreement with each given statement as 'Strongly Disagree', 'Disagree,' 'Neutral', 'Agree', or 'Strongly Agree.' 
+  Scores are derived for each of the Five Factors based on the participants answers. Briefly, points are allotted to each item based on the participant's answer, and a Five Factor score is generated by summing the points for the 12 items associated with a factor and assigning a T value based on test norms. 
+  The NEO-FFI has been widely validated for use in the assessment of personality in healthy populations and for the assessment of clinically-defined personality disorders according to the Diagnostic and Statistical Manual of Mental Disorders - Version 5 (Trull, 2012). 
+  In addition to other various self-report measures,  The NEO-FFI was collected on HCP participants and we include both the raw data (i.e. score on each of 60 items) and the Five Factor data (i.e. score for each of the five factors) in our dataset.
+
+## Network Measures
+  Recently, the field of neuroscience has begun to incorporate mathematical formalisms from graph theory to try and succintly quantify how regions of the brain interact as a cohesive network. In this approach, brain regions are defined as nodes, connected by edges (Fig 1A). The presence of an edge (usually a statistical interdependency, such as correlation of activity) is interpreted as an indication that two regions have similar activity, and are said to be functionally connected. We have chosen several graph statistics common to neuroscience to include in our analysis, with the hypothesis that they might better capture meaningful features of the brain than individual connections alone. While others have explored the relationship between edges, and personality measures, it is unclear how these more comprehensive summary statistics will explain variances in NEO-FFI scores.
+  
+  These measures can be divided into two categories: (1) node statistics, which describe properties of a single node, and it's connections to other nodes, and (2) network statistics, which describe the structure of all connections in a graph. We will first discuss network statistics. The first network statistic calculated is the $\textit{global efficiency}$ (Fig B2). This measure is proportional to the average distance between a single node, to any other nodes by travelling along edges. The next measure is a $\textit{community partition}$ (Fig B3). This breaks a nextwork into communities, where the nodes in a community will have more connections within that community, than between between communities. We will now discuss node statistics. The first, and most intuitive measure is $\textit{strength}$ (Fig B1). The strength is simply the sum of all edges connected to a given node. The second measure is $\textit{betweenness centrality}$. Betweenness centrality is the fraction of all shortest paths in a network that pass through a given node. Intuitively, nodes with high betweenness centrality are thought to be important for communication between many, distant groups. The last measure is $\textit{within module degree}$, which quantifies the proportion of a nodes connections that are within a community.
+  
+Firgure 1: Schematic of Network Measures
+```{r out.width = "500px", fig.align='center'}
+knitr::include_graphics("/Users/jenis/Documents/R/Final/full_network_ex.png")
+#Bassett & Sporns 2017
+```
+    
+
+# Data Cleaning
+## Variable Selection
+
+  First, we exclude some variables and modify some variables included in the HCP data release that are not of interest for the current project.  In particular, the FreeSurfer brain anatomy data includes a number of measures of no interest. Some examples include `FS_BrainSeg_Vol` which is a measure of total volume of the brian segmentation.  This is redundant with the measure `FS_IntraCranial_Vol` which is a measure of total intracranial volume and is more commonly used as a measure of general head size.  Additionally, other measures we exclude here are general measures of the entire brain or measures of brain tissue classes instead of specific brain regions, such as `FS_Tot_WM_Vol` which is the measure of total white-matter volume.  Also some of the FreeSurfer measures are not measurements of the brain, but rather measurements of the quality of the brain segmentation algorithms, such as `FS_Total_Defect_Holes`.  
+
+We exclude these variables and others from our dataset:
+```{r}
+data2 <- lapply(data, function(x) { 
+  
+  x %>%
+    dplyr::select(-X, -Subject, -FS_BrainSeg_Vol, -FS_BrainSeg_Vol_No_Vent, -FS_BrainSeg_Vol_No_Vent_Surf,
+                  -FS_LCort_GM_Vol, -FS_RCort_GM_Vol, -FS_TotCort_GM_Vol, -FS_SubCort_GM_Vol, -FS_Total_GM_Vol, -FS_SupraTentorial_Vol, -FS_R_WM_Vol, -FS_Tot_WM_Vol, -FS_Mask_Vol,  -FS_BrainSegVol_eTIV_Ratio, -FS_MaskVol_eTIV_Ratio, -FS_LH_Defect_Holes,  -FS_RH_Defect_Holes, -FS_Total_Defect_Holes, -FS_L_WM_Hypointens_Vol, -FS_R_WM_Hypointens_Vol, -FS_WM_Hypointens_Vol)
+})
+```
+
+## Scaling
+Of the brain structural measures we retain, there are two types of measures.  For subcortical brain regions we have measures of regional volume, and for cortical brain regions we have measures of cortical thickness.  Thickness is used for cortical structure because the cortex is represented as a set of two two-dimensional surfaces, and the thickness is calculated as the Euclidean distance between corresponding vertices of these two surfaces.  
+
+To control for the effect of head size and brain size all of the subcortical volumes, we scale by the total intracranial volume estimated by FreeSurfer.
+```{r}
+fs_scaled <- as.data.frame(sapply(data2$full[ , grep("FS_.*_Vol", names(data2$full))], function(x) {
+  x/data2$full$FS_IntraCranial_Vol
+}))
+fs_scaled <- fs_scaled[,-1]
+names(fs_scaled) <- paste0(names(fs_scaled), "_scaled")
+```
+
+The scaled volumes are retained, and all unscaled volumes excluding total intracranial volume are dropped.
+```{r}
+data3 <- lapply(data2, function(x) {
+  cbind(x, fs_scaled)
+})
+
+data3 <- lapply(data3, function(x) {
+  x[,-grep("FS_.*_Vol$", names(x))[-1]]
+})
+```
+
+## Separation of NEO data and HCP data into distinct dataframes
+
+Next, for use in our analyses, we separate the HCP data from the NEO-FFI data.
+
+First, we save out the Five Factor score data and raw NEO-FFI data each to a separate dataframe. 
+```{r}
+neoFFData <- data3$full[, grep("NEOFAC.*", names(data3$full))]
+neoRData <- data3$full[, grep("NEORAW.*", names(data3$full))]
+```
+
+Last, we remove all raw NEO data and Five Factor Score data from the original matrix, retaining only HCP measures.
+```{r}
+data4 <- lapply(data3, function(x) {
+  x[,-grep("NEO*", names(x))]
+})
+lapply(data4, dim)
+```
+
+Our final cleaned HCP dataset has 810 observations and 11734 features.
+
+## Split into Training and Test Samples
+
+We split the dataset into training and testing samples. We choose to make this split to separate the testing data from data used to fit parameters, despite the fact that random forest's out of bag predictions can be used for an out of sample prediction The training dataset includes 710 observations and the testing set includes 100.  We chose a rather high training fraction because we have a wide dataset and would like to retain as many observations as possible for training. One hundred observations should be sufficient to estimate the out-of-sample testing error. 
+
+```{r}
+set.seed(1)
+idx = sample(1:810, size=100)
+
+data.train <- lapply(data4, function(x){
+  x[-idx,]
+})
+
+data.test <- lapply(data4, function(x){
+  x[idx,]
+})
+
+neoFFData.train <- neoFFData[-idx,]
+neoFFData.test <- neoFFData[idx,]
+```
+
+# Exploratory Data Analysis
+## Demographic variables of participant sample 
+### Age
+
+Before making any predictions, we first want to explore some of the more intuitive variables in the dataset. 
+
+We note that the age of most participants ranges from 22-35, with a few older individuals.
+```{r, echo=FALSE}
+age_table <- as.data.frame(table(data4$full$Age))
+colnames(age_table) <- c("Age Group", "Frequency")
+age_table
+
+age_bp<- ggplot(age_table, aes(x=" ", y=age_table$Frequency, fill=age_table$`Age Group`))+
+geom_bar(width = 1, stat = "identity") +
+  ylab("Frequency") +
+  xlab("Age")
+#age_bp
+
+age_pie <-  age_bp+coord_polar("y", start=0)+
+    ylab("") +
+    xlab("Frequency")+
+    scale_fill_discrete(name="Age Group")
+age_pie
+```
+### Gender
+
+Sex is almost evenly split between male and female.
+```{r, echo=FALSE}
+gender_table <- as.data.frame(table(data4$full$Gender))
+colnames(gender_table) <- c("Gender", "Frequency")
+gender_table
+
+gender_bp<- ggplot(gender_table, aes(x=" ", y=Frequency, fill=Gender))+
+geom_bar(width = 1, stat = "identity")+
+  ylab("Frequency") +
+  xlab("Age")
+#gender_bp
+
+gender_pie <-  gender_bp+coord_polar("y", start=0) +
+  xlab(" ")+
+  ylab("Frequency")
+gender_pie
+```
+
+## Confirmatory Factor Analysis of NEO-FFI data
+We observe that the Comparative Fit Index (CFI) 0.653 and the Tucker-Lewis Index (TLI) is 0.639, indicating that the specified model approximates a moderately good fit of the data (ideal CFI and TLI would be > 0.9). The summary showing this information is located in the Appendix.
+
+The RMSEA (Root mean square error of approximation) measures the “error of approximation” (i.e. residuals) and measures how closely the specified model reproduces data patterns (i.e. the covariances among indicators). The RMSEA observed here is 0.059 with a 90% CI of 0.058, 0.061. The P-value associated with the observed RMSEA is < 0.05, suggesting that the Five Factor model fits the raw NEO data very well. 
+
+Based on these results, we proceed with using the Five Factor data rather than the raw NEO data for ease of interpretability.
+
+
+## Correlation Matrices of Network Measures 
+
+Brain activity naturally autocorrelates with itself over different brain regions, and because these networks are constructed by taking the pair-wise correlation or partial correlation between the time-series of each network node we expect the edge data to be highly correlated.  The brain networks are composed of 149 nodes and pairwise connections between each node pair. Note that while there are 149 nodes included, the names range from 1 to 300, as a result of the original partition. Because the networks are undirected, this results in `149^2/2-149/2 = 11026` unique network edges.  For example, feature `IC63_IC283` is the connectivity between nodes 63 and 283, while `IC63_IC145` is the connectivity between nodes 63 and 145.  Because these components share a node it should be expected that they will correlate with each other.  Since there are so many edges in the network it is infeasible to explore the correlation between all possible pairs, so we will take multiple random samples of the edge data and plot the im GGPairs plots.  The GGPairs plots are a useful way to display this EDA, because it shows distribution density plots of each variable, the correlations between variable pairs, and the scatter plots of the variable pairs.
+
+Because of the large number of node and edge-wise variables, we have moved these plots to the Appendix. However, it is worth noting that measures across nodes and different edges do tend to be correlated.
+ Lastly, we will visualize out network wide graph statistic: global efficiency.
+
+Network wide graph measures: Global Efficiency
+```{r, echo=FALSE}
+par(mfrow=c(1,2))
+hist(data4$full$GlobEff, col = 'lightblue')
+hist(data4$partial$GlobEff, col = 'lightgrey')
+```
+
+Both partial and full correlations have similar (nearly normal) distributions of global efficiency.
+
+# Analysis
+
+We will first fit a random forest model to the data. Random forest models are ideal because they can capture nonlinear relationships, and because elastic net based methods are not designed for correlated variables. We also calculated boosting combined with random forest, hypothesizing that we will gain predictive power. 
+
+## Parameter Selection
+
+### Random Forest
+
+First we format the data
+```{r}
+data.train.full.neoC <- cbind(neoFFData.train$NEOFAC_C, data.train$full)
+
+neoNames = c('NEOFAC_A', 'NEOFAC_O', 'NEOFAC_C', 'NEOFAC_N', 'NEOFAC_E')
+
+df.full <- lapply(neoNames, function(x){
+  NEO <- neoFFData.train[,which(names(neoFFData.train) == x)]
+  cbind(NEO, data.train$full) 
+})
+names(df.full) <- neoNames
+
+df.partial <- lapply(neoNames, function(x){
+  NEO <- neoFFData.train[,which(names(neoFFData.train) == x)]
+  cbind(NEO, data.train$partial) 
+})
+names(df.partial) <- neoNames
+```
+
+Here, we fit B, the number of trees. One predictor is shown for brevity, but other predictors looked similar. B equal to 1500 was selected.
+```{r eval=FALSE}
+# tune B
+fit.B = randomForest(NEOFAC_C~., data = df.full$NEOFAC_C, ntree = 10000, mtry = 3990) # set mtry to p/3 for now
+plot(fit.B)
+B = 1500
+```
+```{r out.width = "700px", fig.align='center'}
+knitr::include_graphics("/Users/jenis/Documents/R/Final/B.png")
+```
+
+It is important to also tune mtry, the number of random variables selected for each split. However, due to the run time of these models, we were only able to tue mtry on one model, with 3 different random seeds. This model indicated little effect of the variable, and therefore we used the default value of mtry = p/3, where p is the number of predictors in successive analyses.
+
+Tune mtry
+```{r, eval=FALSE}
+ps = seq(from = 1, to = 6000, by = 500)
+rf.error.p <- numeric(length(ps))  # set up a vector 
+cnt = 0;
+for (p in ps)  # repeat the following code inside { } 19 times
+{
+  print(p)
+  cnt = cnt + 1
+  fit.rf <-ranger(NEO~., df.partial$NEOFAC_E, mtry = mtry, num.trees = 1500)# set mtry to p/3 for now 
+  #plot(fit.rf, col= p, lwd = 3)
+  rf.error.p[cnt] <- fit.rf$prediction.error  # collecting oob mse based on B trees
+}
+
+```
+```{r out.width = "700px", fig.align='center'}
+knitr::include_graphics("/Users/jenis/Documents/R/Final/mtry.png")
+```
+
+### Boosting
+
+Here we attempt to optimize the hyper-parameter choices for our boosing model.  This code is currently being run and we anticipate that the properly tuning the parameters of our boosting model will enable us to achieve better predictions on the data.  The boosting models presented (code below) have not had paramteter tuning for number of trees or interaction depth, however they provide us some insight on the efficacy of the boosting model for out data.
+```{r, eval = FALSE}
+gbmGrid <- expand.grid(interaction.depth = c(1,2,4,6,8), n.trees = c(5000, 10000, 15000), shrinkage = .1, n.minobsinnode = 10)
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+
+
+fits.gbm.full <- lapply(df.full, function(x) {
+  set.seed(10)
+  train(NEO ~ ., data = x, 
+                 method = "gbm", 
+                 trControl = fitControl, 
+                 verbose = TRUE, 
+                 tuneGrid = gbmGrid,
+                 metric = "RMSE",
+                 distribution = "gaussian")
+})
+
+fits.gbm.partial <- lapply(df.partial, function(x) {
+  set.seed(10)
+  train(NEO ~ ., data = x, 
+                 method = "gbm", 
+                 trControl = fitControl, 
+                 verbose = TRUE, 
+                 tuneGrid = gbmGrid,
+                 metric = "RMSE",
+                 distribution = "gaussian")
+})
+
+```
+
+
+## Model Fits
+
+All code below for fitting the final models has been evaluated elsewhere and the model fits were saved as `.Rdata` to be loaded later for evaluation.
+
+Code for fitting random forest models.   Mtry is p/3 and ntree is 1500 as evaluated in the parameter tuning section.
+```{r, eval=FALSE}
+mtry = floor(dim(data.train$full)[2]/3)
+
+fits.rf.full <- lapply(df.full, function(x) {
+  randomForest(NEO~., x, mtry = mtry, ntree = 1500)
+})
+
+fits.rf.partial <- lapply(df.partial, function(x) {
+  randomForest(NEO~., x, mtry = mtry, ntree = 1500)
+})
+
+
+```
+
+
+Code for fitting the boosting models
+```{r, eval = FALSE}
+
+fits.gbm.full <- lapply(df.full, function(x) {
+  gbm(NEO~., data = x, distribution = "gaussian", n.trees = 15000, train.fraction = 0.7)
+})
+
+fits.gbm.partial <- lapply(df.partial, function(x) {
+  gbm(NEO~., data = x, distribution = "gaussian", n.trees = 15000, train.fraction = 0.7)
+})
+
+
+```
+
+
+
+#### Predicting NEO agreeableness measure
+
+Load random forest models
+```{r}
+load('./rf_models/fit_rf_full.RData')
+load('./rf_models/fit_rf_partial.RData')
+```
+
+We have arbitrarily selected agreeableness as our first personality trait to predict.
+Here we use our RF model to make predictions on the testing dataset
+```{r}
+predict.full.A = predict(fits.rf.full$NEOFAC_A, data.test$full)
+predict.partial.A = predict(fits.rf.partial$NEOFAC_A, data.test$partial)
+predict.mean.A = rep(mean(neoFFData.test$NEOFAC_A), length(neoFFData.test$NEOFAC_A))
+```
+
+Below is the MSE for the prediction of NEO_A using the full and partial correlation data as well as the mean NEO_A
+```{r}
+mse.neoA.full <- mean((neoFFData.test$NEOFAC_A-predict.full.A)^2)
+mse.neoA.partial <- mean((neoFFData.test$NEOFAC_A-predict.partial.A)^2)
+mse.neoA.mean <- mean((neoFFData.test$NEOFAC_A-predict.mean.A)^2)
+
+print("Table of mean squared error for random forest prediction of NEO-A")
+data.frame(Full = mse.neoA.full, Partial = mse.neoA.partial, mean = mse.neoA.mean)
+```
+As we can see here, the models with both full correlation data and partial correlation data do very similarly, however they only do marginally better than the mean, indicating we are not doing a good job of predicting the scores.
+
+```{r}
+
+par(mfrow = c(2,1))
+plot(predict.full.A, neoFFData.test$NEOFAC_A, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.A, neoFFData.test$NEOFAC_A, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+These predicted vs. measured plots appear to show a relativley good fit.  The line is `Y = X` which would be a perfect fit.  From these plots it is apparent that there is very low variability in the predicted values, ranging only from ~30 to ~33.
+
+Other NEO metrics had similar performance, and can be found in the Appendix
+
+### Boosting models
+
+This model was fit previously.  See code above for model fitting.
+```{r}
+load('gbmFits.Rdata')
+```
+
+
+#### Predicting NEO agreeableness measure
+
+
+Evaluate the gbm performance with the built in GBM plot.
+```{r}
+gbm.perf(fits.gbm.full$NEOFAC_A, method='test')
+```
+Full correlations optimal number of trees 
+
+  
+```{r}
+gbm.perf(fits.gbm.partial$NEOFAC_A, method='test')
+```
+Partial correlations optimal number of trees
+
+These plots show the training error in black and the validation error in red as functions of the number of trees in the boosting model.  The blue dotted line indicates the optimal model which is at the minimum of the testing errors.  For both models, with very few trees the validation error is actually lower than the training error.  
+
+Here we use our GBM model to make predictions on the testing dataset
+```{r}
+predict.full.A.gbm = predict(fits.gbm.full$NEOFAC_A, data.test$full)
+predict.partial.A.gbm = predict(fits.gbm.partial$NEOFAC_A, data.test$partial)
+```
+
+Below is the MSE for the prediction of NEO_A using the full and partial correlation data in our boosting models as well as the mean NEO_A
+```{r}
+mse.neoA.full.gbm <- mean((neoFFData.test$NEOFAC_A-predict.full.A.gbm)^2)
+mse.neoA.partial.gbm <- mean((neoFFData.test$NEOFAC_A-predict.partial.A.gbm)^2)
+mse.neoA.mean <- mean((neoFFData.test$NEOFAC_A-predict.mean.A)^2)
+
+print("Table of mean squared error for boosting prediction of NEO-A")
+data.frame(Full = mse.neoA.full.gbm, Partial = mse.neoA.partial.gbm, mean = mse.neoA.mean)
+```
+As with the Random Forest, the boosting model only does abotu as well as the mean for predicting NEO Agreeableness.
+
+```{r, echo=FALSE}
+par(mfrow = c(2,1))
+plot(predict.full.A.gbm, neoFFData.test$NEOFAC_A, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.A.gbm, neoFFData.test$NEOFAC_A, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+These predicted vs. measured plots appear similar to those from the RF model for NEO-A.  The range of predicted values seems to be slightly larger here, which may mean its doing a better job of modeling the data.  Possibly parameter tuning can improve this.
+
+
+#### Predicting NEO conscientiousness measure
+
+Evaluate the gbm performance with the built in GBM plot.
+```{r}
+gbm.perf(fits.gbm.full$NEOFAC_C, method='test')
+```
+Full correlations optimal number of trees
+
+  
+```{r}
+gbm.perf(fits.gbm.partial$NEOFAC_C, method='test')
+```
+Partial correlations optimal number of trees
+
+Again we see that with few trees the validation error is lower than training, but the training error must be monotonically decreasing, while the validation errors do not
+
+Here we use our GBM model to make predictions on the testing dataset
+```{r}
+predict.full.C.gbm = predict(fits.gbm.full$NEOFAC_C, data.test$full)
+predict.partial.C.gbm = predict(fits.gbm.partial$NEOFAC_C, data.test$partial)
+predict.mean.C = rep(mean(neoFFData.test$NEOFAC_C), length(neoFFData.test$NEOFAC_C))
+
+```
+
+Below is the MSE for the prediction of NEO_C using the full and partial correlation data in our boosting models as well as the mean NEO_C
+```{r}
+mse.neoC.full.gbm <- mean((neoFFData.test$NEOFAC_C-predict.full.C.gbm)^2)
+mse.neoC.partial.gbm <- mean((neoFFData.test$NEOFAC_C-predict.partial.C.gbm)^2)
+mse.neoC.mean <- mean((neoFFData.test$NEOFAC_C-predict.mean.C)^2)
+
+print("Table of mean squared error for boosting prediction of NEO-C")
+data.frame(Full = mse.neoC.full.gbm, Partial = mse.neoC.partial.gbm, mean = mse.neoC.mean)
+```
+The NEO_C shows significantly higher MSE than the NEO_A, however as before, the models are about on-par with the MSE fro mean predictions.  Here we see that the full correlations actually slightly outperform the mean, while the partial correlations slightly underperform it.
+
+```{r}
+par(mfrow = c(2,1))
+plot(predict.full.C.gbm, neoFFData.test$NEOFAC_C, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.C.gbm, neoFFData.test$NEOFAC_C, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+Also similar to RF model.  Again, the range of predictions is low and is close to the mean.
+
+#### Predicting NEO openness measure
+
+Here we use our GBM model to make predictions on the testing dataset
+```{r}
+predict.full.O.gbm = predict(fits.gbm.full$NEOFAC_O, data.test$full)
+predict.partial.O.gbm = predict(fits.gbm.partial$NEOFAC_O, data.test$partial)
+predict.mean.O = rep(mean(neoFFData.test$NEOFAC_O), length(neoFFData.test$NEOFAC_O))
+
+```
+
+Below is the MSE for the prediction of NEO_O using the full and partial correlation data in our boosting models as well as the mean NEO_O
+```{r}
+mse.neoO.full.gbm <- mean((neoFFData.test$NEOFAC_O-predict.full.O.gbm)^2)
+mse.neoO.partial.gbm <- mean((neoFFData.test$NEOFAC_O-predict.partial.O.gbm)^2)
+mse.neoO.mean <- mean((neoFFData.test$NEOFAC_O-predict.mean.O)^2)
+
+print("Table of mean squared error for boosting prediction of NEO-O")
+data.frame(Full = mse.neoO.full.gbm, Partial = mse.neoO.partial.gbm, mean = mse.neoO.mean)
+```
+Again, the model performs on-par with the mean.  As with NEO_C the full correlations perform slightly better.
+
+```{r}
+par(mfrow = c(2,1))
+plot(predict.full.O.gbm, neoFFData.test$NEOFAC_O, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.O.gbm, neoFFData.test$NEOFAC_O, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+Also similar to RF model.  Again, the range of predictions is low and is close to the mean.
+
+#### Predicting NEO neuroticism measure
+
+Evaluate the gbm performance with the built in GBM plot.
+```{r}
+gbm.perf(fits.gbm.full$NEOFAC_N, method='test')
+```
+Full correlations optimal number of trees  
+
+  
+```{r}
+gbm.perf(fits.gbm.partial$NEOFAC_N, method='test')
+```
+Partial correlations optimal number of trees  
+
+The validation error for the full correlation is monotonically increasing leading the function to select only a model with a single tree.  This is very unexpected given that the second tree is fit on the residuals of the first, and one owuld think that by adding an additional split you could fit the data better.  Further exploration is needed.
+
+Here we use our GBM model to make predictions on the testing dataset
+```{r}
+predict.full.N.gbm = predict(fits.gbm.full$NEOFAC_N, data.test$full)
+predict.partial.N.gbm = predict(fits.gbm.partial$NEOFAC_N, data.test$partial)
+predict.mean.N = rep(mean(neoFFData.test$NEOFAC_N), length(neoFFData.test$NEOFAC_N))
+
+```
+
+Below is the MSE for the prediction of NEO_N using the full and partial correlation data in our boosting models as well as the mean NEO_N.  
+```{r}
+mse.neoN.full.gbm <- mean((neoFFData.test$NEOFAC_N-predict.full.N.gbm)^2)
+mse.neoN.partial.gbm <- mean((neoFFData.test$NEOFAC_N-predict.partial.N.gbm)^2)
+mse.neoN.mean <- mean((neoFFData.test$NEOFAC_N-predict.mean.N)^2)
+
+
+print("Table of mean squared error for boosting prediction of NEO-O")
+data.frame(Full = mse.neoN.full.gbm, Partial = mse.neoN.partial.gbm, mean = mse.neoN.mean)
+```
+Again, the model performs on-par with the mean.  Full correlation performs worse, but this is expected given it is using a single tree.
+
+```{r, echo=FALSE}
+par(mfrow = c(2,1))
+plot(predict.full.N.gbm, neoFFData.test$NEOFAC_N, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.N.gbm, neoFFData.test$NEOFAC_N, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+Also similar to RF model.  Again, the range of predictions is low and is close to the mean.  Here we can see since the full correlations model only used a single tree and the interaction depth was set to 1, we only have two values predicted and they are very close to each other.  More investigation into why the model behaved this way is needed. 
+
+
+#### Predicting NEO extroversion measure
+
+Evaluate the gbm performance with the built in GBM plot.
+```{r}
+gbm.perf(fits.gbm.full$NEOFAC_E, method='test')
+```
+Full correlations optimal number of trees  
+
+  
+```{r}
+gbm.perf(fits.gbm.partial$NEOFAC_E, method='test')
+```
+Partial correlations optimal number of trees 
+
+For both the full and partial correlations the optimal number of trees is low, and the validation error quickly begins increasing.
+
+
+Here we use our GBM model to make predictions on the testing dataset
+```{r}
+predict.full.E.gbm = predict(fits.gbm.full$NEOFAC_E, data.test$full)
+predict.partial.E.gbm = predict(fits.gbm.partial$NEOFAC_E, data.test$partial)
+predict.mean.E = rep(mean(neoFFData.test$NEOFAC_E), length(neoFFData.test$NEOFAC_E))
+
+```
+
+Below is the MSE for the prediction of NEO_E using the full and partial correlation data in our boosting models as well as the mean NEO_E
+```{r, echo=FALSE}
+mse.neoE.full.gbm <- mean((neoFFData.test$NEOFAC_E-predict.full.E.gbm)^2)
+mse.neoE.partial.gbm <- mean((neoFFData.test$NEOFAC_E-predict.partial.E.gbm)^2)
+mse.neoE.mean <- mean((neoFFData.test$NEOFAC_E-predict.mean.E)^2)
+
+print("Table of mean squared error for boosting prediction of NEO-E")
+data.frame(Full = mse.neoE.full.gbm, Partial = mse.neoE.partial.gbm, mean = mse.neoE.mean)
+```
+Again, the model performs on-par with the mean.  No real difference between partial and full correlations
+
+```{r, echo=FALSE}
+par(mfrow = c(2,1))
+plot(predict.full.E.gbm, neoFFData.test$NEOFAC_E, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.E.gbm, neoFFData.test$NEOFAC_E, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+Also similar to RF model.  Again, the range of predictions is low and is close to the mean.
+
+
+# Discussion
+
+In this analysis, we show that personality data is not well predicted by this data. This is indicated by the fact that the MSE of our random forest models is similar to the MSE obtained by consistenly predicting the mean. To gain more intuition about why this might be, we fit a single tree to our training data. A single tree should overfit the data, and give a low MSE, but not be generalizeable. In our case, even the single tree gives a narrow range of predictions, although (as expected), with a lower MSE (~8) (see Appendix). Despite the lower MSE, the fact that our model still did not capture the full range of values suggests that the signal contained in our preditors might be low.  This suggests that brain functional connectivity and brain structure are not sensitive measures for capturing personality, and we may need more fine grained measurements of brain function to understand the variability underlying personality.
+
+The fact that our models are consistently making predictions around the the mean may not be unexpected if the predictor set does not well explain the response variable.  If the variables don't much explain the response, then making an ensemble of trees splitting on these variables would be akin to taking a bunch of random samples of the data and then taking the mean of those sample predictions.  In this case we would expect the ensemble estimate would approximate the mean.  
+
+We hypothesized that the boosting method, which learns slowly, would out perform the random forest for this reason.  By fitting successive trees on the residuals the boosting model may be better suited for this dataset in which many variables may be totally irrelevant.  That did not turn out to be the case, however we admit that boosting models have a number of hyper-parameters that can be tuned to calibrate the model to the dataset and we were not able to do that for this test.
+
+# Future Steps
+
+For the boosting model, we would like to do a comprehensive grid search of the parameter space to discover the tunings that are best suited for this dataset.  We currently have a grid search running with the code shown in the *Boosting* section of **Parameter Tuning**.  We fit boosting models with an interaction depth of 1, meaning all trees were stumps.  We suspect models allowing deeper trees might better fit the data, and our grid search includes interaction epths of 1,2,4,6,8.  This grid search has been running for close to 96 hours and is not yet finished, so the computational time of this analysis makes it infeasible currently.  Ideally, we would also like to try searching even slower learning models with much lower shrinkage values and more trees in hopes that slowing the process will allow the model to better fit the data.  
+
+Another future direction could be a different type of edge and node definition. Using ICA to define network edges inherantly destroys much of the correlated activity between regions by enforcing temporal independence on the uncovered latent components.  Some of this might be noise, but much of it also might be meaningful data. Preprocessing step that more tailored to network analyses might give less noisy, and more interpretable results.  ICA may also be hiding meaningful information in the way that it defines brain netowrk nodes.  ICA does not put any constraints on the spatial distribution of the parcellation.  This can allow for individual parcels which are not spatially contiguous, but rather cover multiple areas of the brain.  See Figure 2 below of the spatial map of IC22.  This map is an axial section of the brain, showing that IC22 occupies the bilateral intraparietal sulcus (towards the bottom of the figure) and bilateral precentral sulcus (towards the top).  these are regions that a typically found to be part of the dorsal attention system.  In a typical network analysis, the nodes are restricted to be spatially contiguous regions of the brain, which means that this component would be broken up into four seperate nodes instead of treated as one node. It is possible that repeating this analysis with more typical network modeling methods would yield higher sensitivity to modeling personality.  Unfortunately, these analyses would require significant data processing time and storage space that is not currently available to us and so we were dependent on the network modeling methods done by the investigators of this study
+  **Figure 2**
+```{r out.width = "400px", fig.align='center'}
+knitr::include_graphics("./0222.png")
+```
+
+# References
+Costa PT & McCrae RR. Revised NEO Personality Inventory (NEO-PIR) and NEO Five Factor Inventory (NEO-FFI) professional manual. 1992; Odessa, FL: Psychological Assessment Resources.
+
+Finn ES, Shen X, Scheinost D, Rosenberg MD, Huang J, Chun MM, et al. Functional connectome fingerprinting: identifying individuals using patterns of brain connectivity. Nature Neuroscience 2015; 18(11): 1664–1671. 
+
+Shen X, Finn ES, Scheinost D., Rosenberg MD, Chun MM, Papademetris X, & Constable RT. Using connectome-based predictive modeling to predict individual behavior from brain connectivity. Nature Protocols. 2017;12: 506–518.
+
+Smith SM, Andersson J, Auerbach EJ, et al. Resting-state fMRI in the Human Connectome Project. NeuroImage. 2013;80:144-168.
+
+Smith SM, Bandettini PA, Miller KL, Behrens TEJ, Friston KJ, David O, Liu T, Woolrich MW, Nichols TE. The danger of systematic bias in group-level FMRI-lag-based causality estimation. Neuroimage. 2012; 59:1228-1229
+
+Smith SM, Hyvärinen A, Varoquaux G, Miller KL, Beckmann CF. Group-PCA for very large fMRI datasets. Neuroimage. 2014;101:738-749.
+
+Trull, TJ. The Five-Factor Model of Personality Disorder and DSM-5. Journal of Personality. 2012; 80:1697–1720.
+
+Van Essen DC, Smith SM, Barch DM, et al. The WU-Minn Human Connectome Project: An Overview. NeuroImage. 2013;80:62-79. 
+
+# Appendix
+
+## EDA: Correlation Matrices of Network Measures
+
+Sample correlation of edges from full correlations:
+```{r, echo=FALSE}
+
+ic_idx <- grep("IC.*_IC.*", names(data4$full))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$full[,ic_idx1])
+
+ic_idx <- grep("IC.*_IC.*", names(data4$full))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$full[,ic_idx1])
+```
+
+Sample correlation of edges from partial correlations:
+```{r, echo=FALSE}
+ic_idx <- grep("IC.*_IC.*", names(data4$partial))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$partial[,ic_idx1])
+
+ic_idx <- grep("IC.*_IC.*", names(data4$partial))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$partial[,ic_idx1])
+```
+
+As expected, many of these edges are correlated with eachother. We next explore some of our node level graph statics in a similar format.
+
+Sample correlation of nodewise strength and Betweenness Centrality from full correlations
+```{r, echo=FALSE}
+ic_idx <- grep("IC.*_Str*", names(data4$full))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$full[,ic_idx1])
+
+ic_idx <- grep("IC.*_WMD.*", names(data4$full))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$full[,ic_idx1])
+```
+
+Sample correlation of nodewise strength and betweeness centrality from partial correlations
+```{r, echo=FALSE}
+ic_idx <- grep("IC.*_Str*", names(data4$partial))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$partial[,ic_idx1])
+
+ic_idx <- grep("IC.*_WMD.*", names(data4$partial))
+ic_idx1 <- sample(ic_idx, 7)
+
+ggpairs(data4$partial[,ic_idx1])
+```
+
+We note that strength appears to have notable correlation across nodes.
+
+## CFA for Behavioral Data
+Here, we first double-check whether the Five Factor Model measures of Openness to Experience, Conscientiousness, Extraversion, Agreeableness, and Neuroticism indeed account for the maximal variance in the NEO data set by performing confirmatory factor analysis (CFA).
+
+We first convert raw NEO data to numeric form for use in analysis. 
+```{r}
+neoRData[] <- lapply(neoRData, as.character)
+neoRData[neoRData=="SD"] <- 1
+neoRData[neoRData=="D"]<- 2
+neoRData[neoRData=="N"] <- 3
+neoRData[neoRData=="A"] <- 4
+neoRData[neoRData=="SA"] <- 5
+neoRData[] <- lapply(neoRData, as.numeric)
+```
+
+We then create a model matrix to input into the CFA; here, we model the loadings of the NEO raw items onto each of the Five Factors. 
+```{r}
+ffmodel <- '
+# defining latent variables based on five factors
+Neuroticism =~ NEORAW_01 + NEORAW_06 + NEORAW_11 + NEORAW_16 + NEORAW_21 + NEORAW_26 + NEORAW_31 + NEORAW_36 + NEORAW_41 + NEORAW_46 + NEORAW_51 + NEORAW_56
+
+Extraversion =~ NEORAW_02 + NEORAW_07 + NEORAW_12 + NEORAW_17 + NEORAW_22 + NEORAW_27 + NEORAW_32 + NEORAW_37 + NEORAW_42 + NEORAW_47 + NEORAW_52 + NEORAW_57
+
+Openness =~ NEORAW_03 + NEORAW_08 + NEORAW_13 + NEORAW_18 + NEORAW_23 + NEORAW_28 + NEORAW_33 + NEORAW_38 + NEORAW_43 + NEORAW_48 + NEORAW_53 + NEORAW_58
+
+Agreeableness =~ NEORAW_04 + NEORAW_09 + NEORAW_14 + NEORAW_19 + NEORAW_24 + NEORAW_29 + NEORAW_34 + NEORAW_39 + NEORAW_44 + NEORAW_49 + NEORAW_54 + NEORAW_59
+
+Conscientiousness =~ NEORAW_05 + NEORAW_10 + NEORAW_15 + NEORAW_20 + NEORAW_25 + NEORAW_30 + NEORAW_35 + NEORAW_40 + NEORAW_45 + NEORAW_50 + NEORAW_55 + NEORAW_60
+'
+```
+
+Now, we run the CFA.
+```{r}
+fit <- cfa(ffmodel, data=neoRData)
+```
+
+```{r}
+summary(fit, fit.measures=TRUE, standardized=TRUE)
+```
+
+## Model Performace: Random Forest
+
+Here, we show other NEO metrics prediction values
+
+```{r}
+par(mfrow = c(2,1))
+predict.full.C = predict(fits.rf.full$NEOFAC_C, data.test$full)
+predict.partial.C = predict(fits.rf.partial$NEOFAC_C, data.test$partial)
+plot(predict.full.C, neoFFData.test$NEOFAC_C, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.C, neoFFData.test$NEOFAC_C, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+```{r}
+par(mfrow = c(2,1))
+predict.full.O = predict(fits.rf.full$NEOFAC_O, data.test$full)
+predict.partial.O = predict(fits.rf.partial$NEOFAC_O, data.test$partial)
+plot(predict.full.O, neoFFData.test$NEOFAC_O, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.O, neoFFData.test$NEOFAC_O, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+```{r}
+par(mfrow=c(2,1))
+predict.full.N = predict(fits.rf.full$NEOFAC_N, data.test$full)
+predict.partial.N = predict(fits.rf.partial$NEOFAC_N, data.test$partial)
+plot(predict.full.N, neoFFData.test$NEOFAC_N, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.N, neoFFData.test$NEOFAC_N, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+```{r}
+par(mfrow=c(2,1))
+predict.full.E = predict(fits.rf.full$NEOFAC_E, data.test$full)
+predict.partial.E = predict(fits.rf.partial$NEOFAC_E, data.test$partial)
+plot(predict.full.E, neoFFData.test$NEOFAC_E, pch = 16, col = 'blue')
+abline(0, 1, lwd=5, col="black")
+plot(predict.partial.E, neoFFData.test$NEOFAC_E, pch = 16, col = 'red')
+abline(0, 1, lwd=5, col="black")
+```
+
+
+## Single Tree
+
+Fit and plot single tree
+```{r, fig.width=20, fig.height=20}
+fit1.single <- tree(NEO~., df.full$NEOFAC_A) # The order plays no role
+
+plot(fit1.single)
+text(fit1.single, pretty=0)      
+# pretty=0 only affect the categorical var's. The names will be shown.
+# It has 6 terminal nodes. That means we partition CAtBat and Chits into six boxes. 
+# The predicted values are the sample means in each box.
+```
+
+Look at results
+```{r}
+
+fit1.single.result <- summary(fit1.single)
+
+MSE.single = fit1.single.result$dev/710 # dev=RSS. 
+MSE.single
+```
+
+And prediction
+```{r}
+predict.single = predict(fit1.single, data.test$full)
+plot(neoFFData.test$NEOFAC_A, predict.single, pch = 16, col = 'blue')
+```
+
+Here we see that we still get a fairly narrow range of predictions, despite using a setup that should be over fitting the data.
+
+
+
